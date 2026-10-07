@@ -25,7 +25,6 @@ pipeline {
     }
 
     environment {
-        APP_DIR = '.'
         BACKEND_PORT = '8082'
         FRONTEND_PORT = '5173'
         IMAGE_TAG = "${env.BUILD_NUMBER}"
@@ -48,7 +47,7 @@ pipeline {
 
         stage('Backend - Build & Unit Test') {
             steps {
-                dir("${APP_DIR}/backend") {
+                dir('backend') {
                     script {
                         if (isUnix()) {
                             sh 'mvn -B clean package'
@@ -60,15 +59,15 @@ pipeline {
             }
             post {
                 always {
-                    junit testResults: "${APP_DIR}/backend/target/surefire-reports/*.xml", allowEmptyResults: true
-                    archiveArtifacts artifacts: "${APP_DIR}/backend/target/*.jar", fingerprint: true
+                    junit testResults: 'backend/target/surefire-reports/*.xml', allowEmptyResults: true
+                    archiveArtifacts artifacts: 'backend/target/*.jar', fingerprint: true
                 }
             }
         }
 
         stage('Frontend - Install & Build') {
             steps {
-                dir("${APP_DIR}/frontend") {
+                dir('frontend') {
                     script {
                         if (isUnix()) {
                             sh 'npm ci'
@@ -84,7 +83,7 @@ pipeline {
             }
             post {
                 always {
-                    archiveArtifacts artifacts: "${APP_DIR}/frontend/dist/**", allowEmptyArchive: true
+                    archiveArtifacts artifacts: 'frontend/dist/**', allowEmptyArchive: true
                 }
             }
         }
@@ -94,10 +93,10 @@ pipeline {
             steps {
                 script {
                     if (isUnix()) {
-                        dir("${APP_DIR}/backend") {
+                        dir('backend') {
                             sh 'nohup java -jar target/*.jar > backend.log 2>&1 &'
                         }
-                        dir("${APP_DIR}/frontend") {
+                        dir('frontend') {
                             sh 'nohup npx vite preview --port ${FRONTEND_PORT} --host > frontend.log 2>&1 &'
                         }
                         sh """
@@ -107,10 +106,10 @@ pipeline {
                             done
                         """
                     } else {
-                        dir("${APP_DIR}/backend") {
+                        dir('backend') {
                             bat 'powershell -Command "$p = Start-Process java -ArgumentList \'-jar\', (Get-Item target\\*.jar).FullName -PassThru -RedirectStandardOutput backend.log -RedirectStandardError backend_err.log; $p.Id | Out-File -FilePath backend.pid"'
                         }
-                        dir("${APP_DIR}/frontend") {
+                        dir('frontend') {
                             bat 'powershell -Command "$p = Start-Process npx -ArgumentList \'vite\', \'preview\', \'--port\', \'%FRONTEND_PORT%\', \'--host\' -PassThru -RedirectStandardOutput frontend.log -RedirectStandardError frontend_err.log; $p.Id | Out-File -FilePath frontend.pid"'
                         }
                         bat """powershell -Command "for (\$i=1; \$i -le 30; \$i++) { try { \$r = Invoke-WebRequest -Uri http://localhost:%BACKEND_PORT%/api/health -UseBasicParsing; if (\$r.StatusCode -eq 200) { break } } catch {}; Start-Sleep -Seconds 2 }" """
@@ -122,7 +121,7 @@ pipeline {
         stage('Continuous Testing - Selenium') {
             when { expression { params.RUN_SELENIUM } }
             steps {
-                dir("${APP_DIR}/selenium-tests") {
+                dir('selenium-tests') {
                     script {
                         if (isUnix()) {
                             sh "mvn -B test -Dbase.url=http://localhost:${FRONTEND_PORT} -Dapi.url=http://localhost:${BACKEND_PORT} -Dheadless=true"
@@ -134,8 +133,8 @@ pipeline {
             }
             post {
                 always {
-                    junit testResults: "${APP_DIR}/selenium-tests/target/surefire-reports/*.xml", allowEmptyResults: true
-                    archiveArtifacts artifacts: "${APP_DIR}/selenium-tests/target/screenshots/**", allowEmptyArchive: true
+                    junit testResults: 'selenium-tests/target/surefire-reports/*.xml', allowEmptyResults: true
+                    archiveArtifacts artifacts: 'selenium-tests/target/screenshots/**', allowEmptyArchive: true
                 }
                 // A failed Selenium gate must stop the pipeline before Docker/deploy stages run.
                 failure {
@@ -154,10 +153,10 @@ pipeline {
                             pkill -f "vite preview" || true
                         '''
                     } else {
-                        dir("${APP_DIR}/backend") {
+                        dir('backend') {
                             bat 'powershell -Command "if (Test-Path backend.pid) { $pid = Get-Content backend.pid; Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue; Remove-Item backend.pid -Force }"'
                         }
-                        dir("${APP_DIR}/frontend") {
+                        dir('frontend') {
                             bat 'powershell -Command "if (Test-Path frontend.pid) { $pid = Get-Content frontend.pid; Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue; Remove-Item frontend.pid -Force }"'
                         }
                     }
@@ -167,15 +166,13 @@ pipeline {
 
         stage('Docker Build') {
             steps {
-                dir("${APP_DIR}") {
-                    script {
-                        if (isUnix()) {
-                            sh "docker build -t aqmp-backend:${IMAGE_TAG} ./backend"
-                            sh "docker build -t aqmp-frontend:${IMAGE_TAG} --build-arg VITE_API_BASE_URL=http://localhost:${BACKEND_PORT} ./frontend"
-                        } else {
-                            bat "docker build -t aqmp-backend:${IMAGE_TAG} ./backend"
-                            bat "docker build -t aqmp-frontend:${IMAGE_TAG} --build-arg VITE_API_BASE_URL=http://localhost:${BACKEND_PORT} ./frontend"
-                        }
+                script {
+                    if (isUnix()) {
+                        sh "docker build -t aqmp-backend:${IMAGE_TAG} ./backend"
+                        sh "docker build -t aqmp-frontend:${IMAGE_TAG} --build-arg VITE_API_BASE_URL=http://localhost:${BACKEND_PORT} ./frontend"
+                    } else {
+                        bat "docker build -t aqmp-backend:${IMAGE_TAG} ./backend"
+                        bat "docker build -t aqmp-frontend:${IMAGE_TAG} --build-arg VITE_API_BASE_URL=http://localhost:${BACKEND_PORT} ./frontend"
                     }
                 }
             }
@@ -210,23 +207,21 @@ pipeline {
 
         stage('Deploy') {
             steps {
-                dir("${APP_DIR}") {
-                    script {
-                        def backPort = params.ENVIRONMENT == 'production' ? '80' : '8082'
-                        def frontPort = params.ENVIRONMENT == 'production' ? '8080' : '8081'
-                        if (isUnix()) {
-                            sh """
-                                docker rm -f aqmp-backend-${params.ENVIRONMENT} aqmp-frontend-${params.ENVIRONMENT} || true
-                                docker run -d --name aqmp-backend-${params.ENVIRONMENT} -p ${backPort}:8080 aqmp-backend:${IMAGE_TAG}
-                                docker run -d --name aqmp-frontend-${params.ENVIRONMENT} -p ${frontPort}:80 aqmp-frontend:${IMAGE_TAG}
-                            """
-                        } else {
-                            bat """
-                                docker rm -f aqmp-backend-${params.ENVIRONMENT} aqmp-frontend-${params.ENVIRONMENT} 2>nul || exit 0
-                                docker run -d --name aqmp-backend-${params.ENVIRONMENT} -p ${backPort}:8080 aqmp-backend:${IMAGE_TAG}
-                                docker run -d --name aqmp-frontend-${params.ENVIRONMENT} -p ${frontPort}:80 aqmp-frontend:${IMAGE_TAG}
-                            """
-                        }
+                script {
+                    def backPort = params.ENVIRONMENT == 'production' ? '80' : '8082'
+                    def frontPort = params.ENVIRONMENT == 'production' ? '8080' : '8081'
+                    if (isUnix()) {
+                        sh """
+                            docker rm -f aqmp-backend-${params.ENVIRONMENT} aqmp-frontend-${params.ENVIRONMENT} || true
+                            docker run -d --name aqmp-backend-${params.ENVIRONMENT} -p ${backPort}:8080 aqmp-backend:${IMAGE_TAG}
+                            docker run -d --name aqmp-frontend-${params.ENVIRONMENT} -p ${frontPort}:80 aqmp-frontend:${IMAGE_TAG}
+                        """
+                    } else {
+                        bat """
+                            docker rm -f aqmp-backend-${params.ENVIRONMENT} aqmp-frontend-${params.ENVIRONMENT} 2>nul || exit 0
+                            docker run -d --name aqmp-backend-${params.ENVIRONMENT} -p ${backPort}:8080 aqmp-backend:${IMAGE_TAG}
+                            docker run -d --name aqmp-frontend-${params.ENVIRONMENT} -p ${frontPort}:80 aqmp-frontend:${IMAGE_TAG}
+                        """
                     }
                 }
             }

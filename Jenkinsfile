@@ -25,8 +25,8 @@ pipeline {
     }
 
     environment {
-        APP_DIR = '23102B0065-Mini-Proj'
-        BACKEND_PORT = '8080'
+        APP_DIR = '.'
+        BACKEND_PORT = '8082'
         FRONTEND_PORT = '5173'
         IMAGE_TAG = "${env.BUILD_NUMBER}"
     }
@@ -145,7 +145,7 @@ pipeline {
                 dir("${APP_DIR}") {
                     sh """
                         docker rm -f aqmp-backend-${params.ENVIRONMENT} aqmp-frontend-${params.ENVIRONMENT} || true
-                        docker run -d --name aqmp-backend-${params.ENVIRONMENT} -p ${params.ENVIRONMENT == 'production' ? '80' : '8080'}:8080 aqmp-backend:${IMAGE_TAG}
+                        docker run -d --name aqmp-backend-${params.ENVIRONMENT} -p ${params.ENVIRONMENT == 'production' ? '80' : '8082'}:8080 aqmp-backend:${IMAGE_TAG}
                         docker run -d --name aqmp-frontend-${params.ENVIRONMENT} -p ${params.ENVIRONMENT == 'production' ? '8080' : '8081'}:80 aqmp-frontend:${IMAGE_TAG}
                     """
                 }

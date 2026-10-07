@@ -212,13 +212,13 @@ pipeline {
                     def frontPort = params.ENVIRONMENT == 'production' ? '8080' : '8081'
                     if (isUnix()) {
                         sh """
-                            docker rm -f aqmp-backend-${params.ENVIRONMENT} aqmp-frontend-${params.ENVIRONMENT} || true
+                            docker rm -f aqmp-backend-${params.ENVIRONMENT} aqmp-frontend-${params.ENVIRONMENT} aqmp-backend aqmp-frontend || true
                             docker run -d --name aqmp-backend-${params.ENVIRONMENT} -p ${backPort}:8080 aqmp-backend:${IMAGE_TAG}
                             docker run -d --name aqmp-frontend-${params.ENVIRONMENT} -p ${frontPort}:80 aqmp-frontend:${IMAGE_TAG}
                         """
                     } else {
                         bat """
-                            docker rm -f aqmp-backend-${params.ENVIRONMENT} aqmp-frontend-${params.ENVIRONMENT} 2>nul || exit 0
+                            docker rm -f aqmp-backend-${params.ENVIRONMENT} aqmp-frontend-${params.ENVIRONMENT} aqmp-backend aqmp-frontend 2>nul || exit 0
                             docker run -d --name aqmp-backend-${params.ENVIRONMENT} -p ${backPort}:8080 aqmp-backend:${IMAGE_TAG}
                             docker run -d --name aqmp-frontend-${params.ENVIRONMENT} -p ${frontPort}:80 aqmp-frontend:${IMAGE_TAG}
                         """

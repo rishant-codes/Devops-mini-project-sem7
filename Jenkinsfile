@@ -1,0 +1,161 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    triggers {
+        // Works whether the Jenkins job is backed by a GitHub webhook (commit-triggered)
+        // or has no webhook reachable (falls back to polling SCM every 5 minutes).
+        pollSCM('H/5 * * * *')
+    }
+
+    parameters {
+        choice(name: 'ENVIRONMENT', choices: ['staging', 'production'], description: 'Target deploy environment')
+        booleanParam(name: 'RUN_SELENIUM', defaultValue: true, description: 'Run the Selenium quality gate')
+        booleanParam(name: 'PUSH_IMAGE', defaultValue: false, description: 'Push Docker images to the registry (needs dockerhub-creds)')
+        string(name: 'DOCKER_REGISTRY_NAMESPACE', defaultValue: 'yourdockerhubuser', description: 'Docker Hub namespace/user to tag images under')
+    }
+
+    tools {
+        maven 'Maven3'
+        nodejs 'Node20'
+    }
+
+    environment {
+        APP_DIR = '23102B0065-Mini-Proj'
+        BACKEND_PORT = '8080'
+        FRONTEND_PORT = '5173'
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+                sh 'git log -5 --oneline'
+            }
+        }
+
+        stage('Backend - Build & Unit Test') {
+            steps {
+                dir("${APP_DIR}/backend") {
+                    sh 'mvn -B clean package'
+                }
+            }
+            post {
+                always {
+                    junit testResults: "${APP_DIR}/backend/target/surefire-reports/*.xml", allowEmptyResults: true
+                    archiveArtifacts artifacts: "${APP_DIR}/backend/target/*.jar", fingerprint: true
+                }
+            }
+        }
+
+        stage('Frontend - Install & Build') {
+            steps {
+                dir("${APP_DIR}/frontend") {
+                    sh 'npm ci'
+                    sh 'npm run lint'
+                    sh 'npm run build'
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: "${APP_DIR}/frontend/dist/**", allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Start Services for E2E') {
+            when { expression { params.RUN_SELENIUM } }
+            steps {
+                dir("${APP_DIR}/backend") {
+                    sh 'nohup java -jar target/*.jar > backend.log 2>&1 &'
+                }
+                dir("${APP_DIR}/frontend") {
+                    sh 'nohup npx vite preview --port ${FRONTEND_PORT} --host > frontend.log 2>&1 &'
+                }
+                sh '''
+                    for i in $(seq 1 30); do
+                        curl -sf http://localhost:${BACKEND_PORT}/api/health && break
+                        sleep 2
+                    done
+                '''
+            }
+        }
+
+        stage('Continuous Testing - Selenium') {
+            when { expression { params.RUN_SELENIUM } }
+            steps {
+                dir("${APP_DIR}/selenium-tests") {
+                    sh "mvn -B test -Dbase.url=http://localhost:${FRONTEND_PORT} -Dapi.url=http://localhost:${BACKEND_PORT} -Dheadless=true"
+                }
+            }
+            post {
+                always {
+                    junit testResults: "${APP_DIR}/selenium-tests/target/surefire-reports/*.xml", allowEmptyResults: true
+                    archiveArtifacts artifacts: "${APP_DIR}/selenium-tests/target/screenshots/**", allowEmptyArchive: true
+                }
+                // A failed Selenium gate must stop the pipeline before Docker/deploy stages run.
+                failure {
+                    error('Selenium quality gate failed - blocking deployment.')
+                }
+            }
+        }
+
+        stage('Stop E2E Services') {
+            when { expression { params.RUN_SELENIUM } }
+            steps {
+                sh '''
+                    pkill -f "target/.*\\.jar" || true
+                    pkill -f "vite preview" || true
+                '''
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                dir("${APP_DIR}") {
+                    sh "docker build -t aqmp-backend:${IMAGE_TAG} ./backend"
+                    sh "docker build -t aqmp-frontend:${IMAGE_TAG} --build-arg VITE_API_BASE_URL=http://localhost:${BACKEND_PORT} ./frontend"
+                }
+            }
+        }
+
+        stage('Docker Push') {
+            when { expression { params.PUSH_IMAGE } }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    sh '''
+                        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+                        docker tag aqmp-backend:${IMAGE_TAG} ${DOCKER_REGISTRY_NAMESPACE}/aqmp-backend:${IMAGE_TAG}
+                        docker tag aqmp-frontend:${IMAGE_TAG} ${DOCKER_REGISTRY_NAMESPACE}/aqmp-frontend:${IMAGE_TAG}
+                        docker push ${DOCKER_REGISTRY_NAMESPACE}/aqmp-backend:${IMAGE_TAG}
+                        docker push ${DOCKER_REGISTRY_NAMESPACE}/aqmp-frontend:${IMAGE_TAG}
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                dir("${APP_DIR}") {
+                    sh """
+                        docker rm -f aqmp-backend-${params.ENVIRONMENT} aqmp-frontend-${params.ENVIRONMENT} || true
+                        docker run -d --name aqmp-backend-${params.ENVIRONMENT} -p ${params.ENVIRONMENT == 'production' ? '80' : '8080'}:8080 aqmp-backend:${IMAGE_TAG}
+                        docker run -d --name aqmp-frontend-${params.ENVIRONMENT} -p ${params.ENVIRONMENT == 'production' ? '8080' : '8081'}:80 aqmp-frontend:${IMAGE_TAG}
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "Build ${env.BUILD_NUMBER} for environment ${params.ENVIRONMENT} finished with status ${currentBuild.currentResult}"
+        }
+    }
+}

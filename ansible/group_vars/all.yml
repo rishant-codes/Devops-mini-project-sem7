@@ -1,0 +1,14 @@
+app_user: aqmp
+app_group: aqmp
+app_base_dir: /opt/aqmp
+app_port: 8080
+app_version: "1.0.0"
+
+# Path on the Ansible control machine to the backend jar built by `mvn package`
+backend_jar_src: "../backend/target/backend-0.0.1-SNAPSHOT.jar"
+
+# Path on the control machine to the frontend production build
+frontend_dist_src: "../frontend/dist"
+
+web_root: /var/www/aqmp
+nginx_port: 80

@@ -1,0 +1,15 @@
+[Unit]
+Description=AQMP Backend (Spring Boot)
+After=network.target
+
+[Service]
+User={{ app_user }}
+Group={{ app_group }}
+WorkingDirectory={{ app_base_dir }}
+ExecStart=/usr/bin/java -jar {{ app_base_dir }}/current.jar
+SuccessExitStatus=143
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

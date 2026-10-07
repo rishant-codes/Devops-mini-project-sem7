@@ -1,0 +1,55 @@
+---
+# Usage:
+#   ansible-playbook -i inventory.ini rollback.yml --extra-vars "rollback_version=0.9.0"
+#
+# Rolls the backend back to a previously deployed jar version by re-pointing the
+# "current.jar" symlink and restarting the service - the companion to playbook.yml's
+# versioned deploy, used to demonstrate recovery to the previous stable release.
+
+- name: Roll back the AQMP backend to a previous version
+  hosts: aqmp_servers
+  become: true
+
+  tasks:
+    - name: Fail fast if rollback_version was not supplied
+      fail:
+        msg: "Pass -e rollback_version=<version> (must already exist on the target as aqmp-backend-<version>.jar)"
+      when: rollback_version is not defined
+
+    - name: Confirm the target jar exists on the server
+      stat:
+        path: "{{ app_base_dir }}/aqmp-backend-{{ rollback_version }}.jar"
+      register: target_jar
+
+    - name: Fail if that version was never deployed here
+      fail:
+        msg: "aqmp-backend-{{ rollback_version }}.jar not found in {{ app_base_dir }} - deploy it with playbook.yml first"
+      when: not target_jar.stat.exists
+
+    - name: Re-point the "current" symlink at the rollback version
+      file:
+        src: "{{ app_base_dir }}/aqmp-backend-{{ rollback_version }}.jar"
+        dest: "{{ app_base_dir }}/current.jar"
+        state: link
+        force: true
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+
+    - name: Restart the backend service on the rollback version
+      systemd:
+        name: aqmp-backend
+        state: restarted
+
+    - name: Health check after rollback
+      uri:
+        url: "http://127.0.0.1:{{ app_port }}/api/health"
+        status_code: 200
+        return_content: true
+      register: health
+      retries: 5
+      delay: 3
+      until: health.status == 200
+
+    - name: Report rollback result
+      debug:
+        msg: "Rolled back to {{ rollback_version }}. Health: {{ health.json }}"

@@ -1,0 +1,139 @@
+---
+- name: Provision and deploy the Air Quality Monitoring Platform
+  hosts: aqmp_servers
+  become: true
+
+  tasks:
+    - name: Install prerequisite packages
+      apt:
+        name:
+          - openjdk-17-jre-headless
+          - nginx
+          - ufw
+        state: present
+        update_cache: true
+
+    - name: Create application group
+      group:
+        name: "{{ app_group }}"
+        state: present
+
+    - name: Create application user
+      user:
+        name: "{{ app_user }}"
+        group: "{{ app_group }}"
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+
+    - name: Create application directory
+      file:
+        path: "{{ app_base_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0755"
+
+    - name: Copy the versioned backend jar to the target
+      copy:
+        src: "{{ backend_jar_src }}"
+        dest: "{{ app_base_dir }}/aqmp-backend-{{ app_version }}.jar"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0750"
+      register: jar_copy
+
+    - name: Point the "current" symlink at this version (enables easy rollback)
+      file:
+        src: "{{ app_base_dir }}/aqmp-backend-{{ app_version }}.jar"
+        dest: "{{ app_base_dir }}/current.jar"
+        state: link
+        force: true
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+
+    - name: Install the systemd unit for the backend
+      template:
+        src: templates/aqmp-backend.service.j2
+        dest: /etc/systemd/system/aqmp-backend.service
+        mode: "0644"
+      register: unit_file
+
+    - name: Reload systemd if the unit file changed
+      systemd:
+        daemon_reload: true
+      when: unit_file.changed
+
+    - name: Enable and (re)start the backend service
+      systemd:
+        name: aqmp-backend
+        enabled: true
+        state: restarted
+      when: jar_copy.changed or unit_file.changed
+
+    - name: Ensure the backend service is running (idempotent check on reruns)
+      systemd:
+        name: aqmp-backend
+        enabled: true
+        state: started
+
+    - name: Deploy the frontend production build
+      copy:
+        src: "{{ frontend_dist_src }}/"
+        dest: "{{ web_root }}/"
+        owner: www-data
+        group: www-data
+        mode: "0755"
+
+    - name: Configure the Nginx site for AQMP
+      template:
+        src: templates/aqmp-nginx.conf.j2
+        dest: /etc/nginx/sites-available/aqmp.conf
+        mode: "0644"
+      register: nginx_conf
+
+    - name: Enable the AQMP Nginx site
+      file:
+        src: /etc/nginx/sites-available/aqmp.conf
+        dest: /etc/nginx/sites-enabled/aqmp.conf
+        state: link
+
+    - name: Remove the default Nginx site to avoid port clashes
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Reload Nginx if config changed
+      systemd:
+        name: nginx
+        state: reloaded
+        enabled: true
+      when: nginx_conf.changed
+
+    - name: Allow the web and backend ports through ufw
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "{{ nginx_port }}"
+        - "{{ app_port }}"
+
+    - name: Enable ufw
+      ufw:
+        state: enabled
+        policy: allow
+
+    - name: Health check - backend responds on /api/health
+      uri:
+        url: "http://127.0.0.1:{{ app_port }}/api/health"
+        status_code: 200
+        return_content: true
+      register: health
+      retries: 5
+      delay: 3
+      until: health.status == 200
+
+    - name: Report health check result
+      debug:
+        msg: "Backend health check: {{ health.json }}"
